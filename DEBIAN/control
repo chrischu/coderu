@@ -1,0 +1,10 @@
+Package: coderu
+Version: 0.5
+Section: programming
+Priority: optional
+Architecture: all
+Essential: no
+Depends: bash, highlight, geany
+Maintainer: Christian Schuster <christian.schuster@students.fh-hagenberg.at>
+Provides: coderu
+Description: Helper for common programming exercise tasks

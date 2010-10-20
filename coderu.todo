@@ -1,0 +1,2 @@
+* Möglichkeit Testfallausgabe auch in Datei zu schreiben (zusätzliche Finish-Option) "-w"
+* Optionales Zippen der referenzierten ".h"-Dateien (und ihrer ".c"-Dateien)

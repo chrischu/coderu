@@ -1,0 +1,627 @@
+#!/bin/bash
+
+# Version: 0.5 (14.10.2010)
+
+# Load settings from configuration file
+. /usr/etc/coderu/coderu.cfg
+
+# Functions
+function removeSurroundingSpaces {
+    local result=$1
+    result=${result##" "}
+    result=${result%%" "}
+    echo "$result"
+}
+
+function stripColorTags {
+    local result="$1"
+    local regex='.*(\\E\[[0-9][0-9];?[0-9]?[0-9]?m).*'
+    
+    while [[ "$result" =~ $regex ]]
+    do
+        result=${result//"${BASH_REMATCH[1]}"/}
+    done
+
+    echo "$result"
+}
+
+function strLen {
+    local str=`stripColorTags "$1"`
+    echo $[${#str}-1]
+}
+
+function printTableHeader {
+    local cCount=$#
+    local columns=$@
+    local cName=""
+    local cWidth=0
+    local tWidth=0
+    local cIndex=0
+
+    for column in $columns
+    do
+        local index=$[`expr index "$column" ":"`-1]
+        cName=${column:0:index}
+        cWidth=${column#"$cName:"}
+        tWidth=$[$tWidth+$cWidth]
+    done
+    tWidth=$[$tWidth+$cCount+1]
+    
+    repeat "-" $tWidth
+    echo
+    
+    echo -n "|"
+    for column in $columns
+    do
+        local index=$[`expr index "$column" ":"`-1]
+        cName=${column:0:index}
+        cWidth=${column#"$cName:"}
+        local cNameLen=${#cName}
+        local spacingLeft=$[($cWidth-$cNameLen)/2]
+        local spacingRight=$[$cWidth-$spacingLeft-$cNameLen]
+        
+        repeat " " $spacingLeft
+        echo -n "$cName"
+        repeat " " $spacingRight
+        echo -n "|"
+        
+        cindex=$[cindex+1]
+    done
+    echo
+    
+    repeat "-" $tWidth
+    echo
+}
+
+function printTableRow {
+    local cCount=$#
+
+    echo -n "|"
+    local cIndex=0
+    for column in "$@"
+    do
+        local colLen=${#column}
+        local revColumn=`echo "$column" | rev`
+        local index=$[$colLen-`expr index "$revColumn" ":"`]
+        local cValue=${column:0:$index}
+        local cWidth=${column:$[index+1]}
+        local cValueLen=`strLen "$cValue"`
+        echo -ne " $cValue"
+        local spacing=$[$cWidth-$cValueLen-2]
+        repeat " " $spacing
+        cIndex=$[cIndex+1]
+        echo -n "|"
+    done
+    echo
+}
+
+function printTableFooter {
+    repeat "-" $1
+    echo 
+}
+
+function repeat {
+    local char=$1
+    local count=$2
+
+    while [ $count -gt 0 ]
+    do
+        echo -n "$char"
+        count=$[$count - 1]
+    done
+}
+
+function writeStatus {
+    [ $silent -eq 0 ] && echo -e $1
+}
+
+function writeError {
+    echo -e "\aERROR: $1" 1>&2
+    exit 0
+}
+
+function getCharAt {
+    local string=$1
+    local pos=$2
+    echo "${string:pos:1}"
+}
+
+function colorCodeDiff {
+    local string=$1
+    local pattern=$2
+    local stringLen=${#string}
+    local patternLen=${#pattern}
+    local result=""
+    local i=0
+    while [ $i -lt $stringLen ]
+    do
+        local stringChar=`getCharAt "$string" "$i"`
+        local patternChar=`getCharAt "$pattern" "$i"`
+
+        if [ "$stringChar" == "$patternChar" ]
+        then
+            result="$result\E[32m$stringChar"
+        else
+            result="$result\E[31m$stringChar"
+        fi
+        
+        i=$[i+1]
+    done
+    
+    if [ $i -lt $patternLen ]
+    then
+        result="$result\E[31m"
+        while [ $i -lt $patternLen ]
+        do
+            result="$result"_
+            i=$[i+1]
+        done
+    fi
+    
+    result="$result\E[30m"
+    echo $result
+}
+
+function getCustomIncludes {
+    local regex='#include \"([a-zA-Z0-9_-]+\.h)\"'
+    local includes=""
+    
+    for file in $@
+    do
+        #echo $file
+        while read line
+        do
+            #echo "   $line"
+            if [[ "$line" =~ $regex ]]
+            then
+                local include=${BASH_REMATCH[1],,}
+                includes=${includes/"$include "/}
+                includes="$includes$include "
+            fi
+        done < $file
+    done
+    
+    echo ${includes#" "}
+}
+
+function getProjectName {
+    if [ $# -eq 1 ]
+    then
+        ProjectName=$@
+    elif [ $# -lt 1 ]
+    then
+        echo -n "No project name specified. Please specify one: "
+        read ProjectName
+    else
+        writeError "Too many arguments!"
+    fi
+
+    ExecutableFile=$ProjectName.o
+    SourceFile=$ProjectName.c
+    TestFile=$ProjectName.t
+    DebugFile=$ProjectName.d
+    ScreenshotFile=$ProjectName.png
+    TextOutputFile=$ProjectName.txt
+}
+
+function getProjectNames {
+    if [ $# -gt 0 ] 
+    then
+        ProjectNames=$@
+        SourceFileNames=""
+        for projectName in $ProjectNames
+        do
+            SourceFileNames="$SourceFileNames $projectName.c"
+        done
+        SourceFileNames=${SourceFileNames#" "}
+        writeStatus "The following source files will be used: $SourceFileNames"
+    else
+        writeStatus "Automatically searching for valid source files..."
+        SourceFileNames=`ls *.c`
+        ProjectNames=${namesc//.c}
+        writeStatus "Search successfully completed, the following files where found: $SourceFileNames"
+    fi
+}
+
+function create {   
+    if [ -f $SourceFile ]
+    then
+        echo -n "WARNING: File already exists. Do you want to override it? [y/N] "
+        read option
+        
+        if [ "$option" != "y" ]
+        then
+            exit
+        fi
+    fi
+    
+    local date=`date +$DATE_FORMAT`
+    
+    local header_left="/* $SourceFile:"
+    local header_right="$CREATOR, $date */"
+        
+    local hllen=$[`echo "$header_left" | wc -c`-1]
+    local hrlen=$[`echo "$header_right" | wc -c`-1]
+    local space=$[$HEADER_WIDTH-$hrlen-$hllen]
+
+    writeStatus "\nCreating project files for project \"$ProjectName\"...\n"
+    
+    writeStatus "Creating source file \"$SourceFile\"..."
+    touch $SourceFile
+    
+    # First header line (top border)
+    echo -n "/" > $SourceFile
+    repeat "*" $[$HEADER_WIDTH-2] >> $SourceFile
+    echo "/" >> $SourceFile 
+    
+    # Second header line (title)
+    echo -n "$header_left" >> $SourceFile
+    repeat " " $space >> $SourceFile
+    echo "$header_right" >> $SourceFile
+    
+    # Third header line (separator)
+    echo -n "/* " >> $SourceFile
+    repeat $HEADER_UNDERLINE_CHAR $[$HEADER_WIDTH-6] >> $SourceFile
+    echo " */" >> $SourceFile
+    
+    # Comment header lines    
+    for (( c=1; c<=$HEADER_COMMENT_LINES; c++ ))
+    do
+        echo -n "/*" >> $SourceFile
+        repeat " " $[$HEADER_WIDTH-4] >> $SourceFile
+        echo "*/" >> $SourceFile
+    done
+    
+    # Last header line (bottom border)
+    echo -n "/" >> $SourceFile
+    repeat "*" $[$HEADER_WIDTH-2] >> $SourceFile
+    echo -e "/\n" >> $SourceFile 
+    
+    # Includes
+    for include in $INCLUDES
+    do
+        if [ `getCharAt $include 0` == "<" ] 
+        then
+            echo -e "#include $include" >> $SourceFile
+        else
+            echo -e "#include \"$include\"" >> $SourceFile
+        fi
+        
+    done
+    
+    if [ $INCLUDE_BOOL_DEF -eq 1 ]
+    then
+        # Boolean def
+        echo -e "\ntypedef enum bool { false, true } bool;" >> $SourceFile
+    fi
+    
+    # Empty main function
+    echo -e "\nint main(int argc, char *argv[])" >> $SourceFile
+    echo "{" >> $SourceFile
+    
+    echo -e "    return 0;" >> $SourceFile
+    echo "}" >> $SourceFile
+    writeStatus "Source file successfully created!\n"
+    
+    writeStatus "Creating test case file \"$TestFile\"..."
+    touch $TestFile
+    echo "# Tests for \"$SourceFile\"" > $TestFile
+    echo "<Test input> ; <Expected output>" >> $TestFile
+    writeStatus "Test case file successfully created!\n"
+
+    writeStatus "File creation successfully completed!"
+}
+
+function open {  
+    if [ -f $SourceFile ] 
+    then
+        writeStatus "Opening created files in geany..."
+        [ $OPEN_FILES_IN_NEW_INSTANCE -eq 1 ] && gargs="-i"
+        geany $gargs $TestFile $SourceFile &
+        writeStatus "Files successfully opened!" 
+    else
+        writeError "File \"$SourceFile\" couldn't be found!"
+    fi 
+}
+
+function compile {
+    local includes=`getCustomIncludes $SourceFile`
+    includes=${includes//".h"/".c"}
+    includes=${includes//"$SourceFile"/}
+    
+    writeStatus "Compiling \"$SourceFile\" with command \"gcc $GCC_ARGS -o $ExecutableFile $SourceFile $includes\"..."
+    gcc $GCC_ARGS -o $ExecutableFile $SourceFile $includes
+    local compileResult=$?
+    if [ $compileResult -ne 0 ]
+    then
+        writeError "Compile failed!"
+        exit
+    fi
+    writeStatus "Compile successfully completed!"
+}
+
+function run {
+    echo -n "Please enter the arguments you want to give to your program: ";
+    read arguments
+    writeStatus "Running \"$ExecutableFile\" with \"$arguments\"..."
+    ./$ExecutableFile $arguments
+    writeStatus "End of program!"
+}
+
+function debug {
+    writeStatus "Starting debugging session..."
+    gcc -g -o $DebugFile $SourceFile
+    gdb $DebugFile
+    writeStatus "End of debugging session!"
+}
+
+function test {
+    cnt=1
+
+    echo "Running test cases for \"$SourceFile\""
+
+    while read line 
+    do
+        local input=""
+        local output=""
+        local expected=""
+
+        local commentIndex=`expr index "$line" "#"`
+        [ $commentIndex -eq 1 ] && continue
+        
+        local sepIndex=`expr index "$line" ";"`
+        
+        if [ $sepIndex -gt 0 ]
+        then
+            input=${line:0:sepIndex-2}
+            expected=${line:sepIndex+1}
+        else
+            input=$line
+        fi
+        
+        output=`./$ExecutableFile $input`
+        
+        echo -e "Testcase $cnt: ./$ExecutableFile $input"
+        echo "Output $cnt  : $output"
+
+        cnt=$[$cnt + 1]
+        echo
+    done < $TestFile
+}
+
+function unittest {
+    echo "Running unit tests for \"$SourceFile\""
+    
+    local arrayIndex=0
+    
+    local maxInput=0
+    local maxExpected=0
+    local maxOutput=0
+    
+    local cntSuccess=0
+    local cntError=0
+    
+    while read line
+    do
+        local input=""
+        local output=""
+        local expected=""
+        local result=""
+    
+        local commentIndex=`expr index "$line" "#"`
+        [ $commentIndex -eq 1 ] && continue
+        
+        local sepIndex=`expr index "$line" ";"`
+        
+        if [ $sepIndex -gt 0 ]
+        then
+            input=${line:0:sepIndex-2}
+            expected=${line:sepIndex+1}
+        else
+            continue
+        fi
+        
+        output=`./$ExecutableFile $input`
+        
+        output=`removeSurroundingSpaces "$output"`
+        expected=`removeSurroundingSpaces "$expected"`
+        
+        if [ "$output" == "$expected" ]
+        then
+            result="\E[32mO\E[30m"
+            cntSuccess=$[$cntSuccess+1]
+        else
+            result="\E[31mX\E[30m"
+            cntError=$[$cntError+1]
+        fi
+        
+        local len=${#input}
+        [ $len -gt $maxInput ] && maxInput=$len
+        
+        len=${#expected}
+        [ $len -gt $maxExpected ] && maxExpected=$len
+        
+        len=${#output}
+        [ $len -gt $maxOutput ] && maxOutput=$len
+        
+        tests[$arrayIndex]=$input; arrayIndex=$[$arrayIndex+1]
+        tests[$arrayIndex]=$expected; arrayIndex=$[$arrayIndex+1]
+        tests[$arrayIndex]=$output; arrayIndex=$[$arrayIndex+1]
+        tests[$arrayIndex]=$result; arrayIndex=$[$arrayIndex+1]
+    done < $TestFile
+    
+    local colNrTitle="Nr"
+    local colInputTitle="Input"
+    local colOutputTitle="Output"
+    local colExpectedTitle="Expected"
+    
+    local colNrMinWidth=$[${#colNrTitle}+2]
+    local colInputMinWidth=$[${#colInputTitle}+2]
+    local colOutputMinWidth=$[${#colOutputTitle}+2]
+    local colExpectedMinWidth=$[${#colExpectedTitle}+2]
+    
+    local colNrWidth=4
+    local colInputWidth=$[$maxInput+2]
+    local colOutputWidth=$[$maxExpected+2]
+    local colExpectedWidth=$[$maxExpected+2]
+    #local colResultWidth=3
+    
+    [ $colInputWidth -lt $colInputMinWidth ] && colInputWidth=$colInputMinWidth
+    [ $colOutputWidth -lt $colOutputMinWidth ] && colOutputWidth=$colOutputMinWidth
+    [ $colExpectedWidth -lt $colExpectedMinWidth ] && colExpectedWidth=$colExpectedMinWidth
+    
+    local tableWidth=$[$colNrWidth+$colInputWidth+$colOutputWidth+$colExpectedWidth+5]
+
+    printTableHeader "$colNrTitle:$colNrWidth" "$colInputTitle:$colInputWidth" "$colExpectedTitle:$colExpectedWidth" "$colOutputTitle:$colOutputWidth" 
+        
+    local testIndex=0
+    while [ $testIndex -lt ${#tests[@]} ]
+    do
+        local testNr=$[($testIndex/4)+1]
+        local input=${tests[$testIndex]}
+        local expected=${tests[$[$testIndex+1]]}
+        local output=${tests[$[$testIndex+2]]}
+        #local result=${tests[$[$testIndex+3]]}
+        
+        output=`colorCodeDiff "$output" "$expected"`
+        
+        printTableRow "$testNr:$colNrWidth" "$input:$colInputWidth" "$expected:$colExpectedWidth" "$output:$colOutputWidth"
+        
+        testIndex=$[$testIndex+4]
+    done
+    
+    printTableFooter $tableWidth
+    
+    writeStatus "Tests completed ($cntSuccess successful, $cntError failed)!"
+}
+
+function print {
+    if [ $PRINT_TO_TXT -eq 1 ]
+    then
+        writeStatus "Running tests and saving output to \"$TextOutputFile\"..."
+        coderu -ts $ProjectName > $TextOutputFile
+        writeStatus "Test outputs successfully written!"
+    else
+        writeStatus "Taking testrun screenshot..."
+        [ -d $SCREENSHOT_DIR ] || mkdir $SCREENSHOT_DIR
+        gnome-terminal --hide-menubar -t ss$ProjectName -x bash -c "coderu -ts $ProjectName; import -window ss$ProjectName $SCREENSHOT_DIR/$ScreenshotFile" 
+        writeStatus "Testrun screenshot \"$ScreenshotFile\" successfully created!"
+    fi
+}
+
+function finish {
+    local finish_photo=1
+    local finish_zip=1
+    local finish_format=1
+    
+    if [ "$finish_arg" != "" ]
+    then
+        [ "${finish_arg:0:1}" == "0" ] && finish_photo=0
+        [ "${finish_arg:1:1}" == "0" ] && finish_zip=0
+        [ "${finish_arg:2:1}" == "0" ] && finish_format=0
+    fi    
+
+    if [ $finish_photo -eq 1 ]
+    then
+        writeStatus "Taking screenshots of all found programs..."
+        for projectName in $ProjectNames 
+        do
+            if [ -f $projectName.t ]
+            then
+                coderu -p $ProjectNames
+                sleep $SCREENSHOT_WAITTIME
+            fi
+        done
+        writeStatus "Screenshots successfully taken!"
+    fi
+    
+    if [ $finish_zip -eq 1 ]
+    then
+        writeStatus "Creating zip file of selected source files..."
+        local exnr=`expr match $PWD '.*\([0-9][0-9]\)'`
+        
+        if [ "$exnr" == "" ] 
+        then
+            echo -n "No valid exercise number found. Please enter manually: "
+            read exnr
+        fi
+        
+        [ -d $ZIP_DIR ] || mkdir $ZIP_DIR
+        
+        local zipname="$LAST_NAME.$FIRST_NAME.$exnr.zip"
+        local includes=`getCustomIncludes $SourceFileNames`
+        
+        [ -f $zipname ] && rm $zipname
+        zip $ZIP_DIR/$zipname $SourceFileNames $includes
+        
+        writeStatus "Zip file \"$zipname\" successfully created!"
+    fi
+    
+    if [ $finish_format -eq 1 ]
+    then
+        writeStatus "Formatting source files..."
+        [ -d $HIGHLIGHT_DIR ] || mkdir $HIGHLIGHT_DIR
+        
+        for projectName in $ProjectNames 
+        do
+            if [ -f $projectName.t ]
+            then
+                highlight -i $projectName.c -O $HIGHLIGHT_DIR $HIGHLIGHT_FORMAT -s $HIGHLIGHT_STYLE
+            fi
+        done
+                
+        writeStatus "Source files successfully formatted!"
+    fi
+}
+
+# Argument parsing
+precomp=""
+postcomp="r"
+multifile=0
+silent=0
+
+while getopts "r d t c C p s f F: o u" arg
+do
+    case "$arg" in
+        c) precomp="c";;
+        o) precomp="o";;
+        C) precomp="C";;
+        f) precomp="f" multifile=1;;
+        F) precomp="f" multifile=1 finish_arg=$OPTARG;;
+        r) postcomp="r";;
+        d) postcomp="d";;
+        t) postcomp="t";;
+        p) postcomp="p";;
+        u) postcomp="u";;
+
+        s) silent=1;;
+    esac
+done
+shift $[$OPTIND-1]
+
+# Main program
+if [ $multifile -eq 1 ]
+then
+    getProjectNames $@
+else
+    getProjectName $@
+fi
+
+case "$precomp" in
+    "c") create;;
+    "o") open;;
+    "C") create; open;;
+    "f") finish;;
+esac
+
+[ "$precomp" != "" ] && exit;
+
+compile
+
+case "$postcomp" in
+    "r") run;;
+    "d") debug;;
+    "t") test;;
+    "p") print;;
+    "u") unittest;;
+esac

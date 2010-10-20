@@ -1,0 +1,61 @@
+#!/bin/bash
+
+function split
+{
+    index=$[`expr index "$1" "$2"`-1]
+    [ $index -gt 0 ] && echo -n ${1:0:$index}
+}
+
+OLD_CFG_PATH="/usr/etc/coderu/coderu.cfg"
+
+[ -f $OLD_CFG_PATH ] || exit 0
+
+NEW_CFG_PATH=tmp$OLD_CFG_PATH
+dpkg-deb --extract coderu.deb tmp
+
+NEW_SETTINGS=""
+while read setting comment
+do
+    add=`split $setting "="`
+    [ "$add" != "" ] && NEW_SETTINGS="$NEW_SETTINGS$add "
+done < $NEW_CFG_PATH
+
+CHANGED_SETTINGS=""
+while read setting comment
+do
+    name=`split $setting "="`
+    index=`expr index "$NEW_SETTINGS" "$name"`
+    ol=${#NEW_SETTINGS}
+    NEW_SETTINGS=${NEW_SETTINGS/"$name "/}
+    nl=${#NEW_SETTINGS}
+    
+    if [ $ol -gt $nl ]
+    then
+        CHANGED_SETTINGS="$CHANGED_SETTINGS$setting $comment\n"
+    fi
+done < $OLD_CFG_PATH
+
+while read setting comment
+do
+    name=`split $setting "="`
+    index=`expr index "$NEW_SETTINGS" "$name"`
+    ol=${#NEW_SETTINGS}
+    NEW_SETTINGS=${NEW_SETTINGS/"$name "/}
+    nl=${#NEW_SETTINGS}
+    
+    if [ $ol -gt $nl ]
+    then
+        CHANGED_SETTINGS="$CHANGED_SETTINGS$setting $comment\n"
+    fi
+    
+    if [ "$setting" == "export" ]
+    then
+        CHANGED_SETTINGS="$CHANGED_SETTINGS\n$setting $comment"
+    fi
+done < $NEW_CFG_PATH
+
+echo -e $CHANGED_SETTINGS > $OLD_CFG_PATH
+
+#cat $NEW_CONF_PATH
+
+rm -R tmp
