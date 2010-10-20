@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Version: 0.5 (14.10.2010)
+# Version: 0.6 (20.10.2010)
 
 # Load settings from configuration file
 . /usr/etc/coderu/coderu.cfg
