@@ -184,6 +184,15 @@ function getCustomIncludes {
     echo ${includes#" "}
 }
 
+function getDependencies {
+    local sourceFile="$1"
+    local oFile=${sourceFile/".c"/".o"}
+    local includes=`getCustomIncludes $sourceFile`
+    
+    local dependencies="$oFile: $includes $sourceFile"
+    echo "$dependencies"  
+}
+
 function getProjectName {
     if [ $# -eq 1 ]
     then
@@ -202,6 +211,7 @@ function getProjectName {
     DebugFile=$ProjectName.d
     ScreenshotFile=$ProjectName.png
     TextOutputFile=$ProjectName.txt
+    MakeFile=$ProjectName.m
 }
 
 function getProjectNames {
@@ -340,8 +350,50 @@ function compile {
     writeStatus "Compile successfully completed!"
 }
 
+function compileMake {
+    writeStatus "Generating makefile \"$MakeFile\"..."
+    
+    local includes=`getCustomIncludes $SourceFile`
+    local oFiles=${includes//".h"/".o"}
+    oFiles="$ExecutableFile $oFiles"
+    echo "$oFiles"
+    
+    touch $MakeFile
+    echo "CC      = gcc" > $MakeFile
+    echo "CCFLAGS = $GCC_ARGS" >> $MakeFile
+    echo "LD      = gcc" >> $MakeFile
+    echo "LDFLAGS = -lm" >> $MakeFile
+    echo >> $MakeFile
+    echo "all: $ProjectName" >> $MakeFile
+    echo >> $MakeFile
+    echo "OFILES = $oFiles" >> $MakeFile
+    echo >> $MakeFile
+    echo ".c.o:" >> $MakeFile
+    echo -e '\t$(CC) $(CCFLAGS) -c $<' >> $MakeFile
+    echo >> $MakeFile
+    echo "$ProjectName: " '$(OFILES)' >> $MakeFile
+    echo -e '\t$(LD) -o $@ $(OFILES) $(LDFLAGS)' >> $MakeFile
+    echo >> $MakeFile
+    echo "clean:" >> $MakeFile
+    echo -e '\trm -f $(OFILES)' >> $MakeFile
+    echo >> $MakeFile
+    echo "# dependencies" >> $MakeFile
+    getDependencies $SourceFile >> $MakeFile
+    
+    local cFiles=${includes//".h"/".c"}
+    for cFile in $cFiles
+    do
+        getDependencies $cFile >> $MakeFile
+    done
+
+    writeStatus "Makefile successfully generated!"
+    writeStatus "Executing makefile..."
+    make -f $MakeFile
+    writeStatus "Makefile successfully executed!"
+}
+
 function run {
-    echo -n "Please enter the arguments you want to give to your program: ";
+    echo -n "Please enter the arguments you want to give to your program: "
     read arguments
     writeStatus "Running \"$ExecutableFile\" with \"$arguments\"..."
     ./$ExecutableFile $arguments
@@ -576,11 +628,12 @@ function finish {
 
 # Argument parsing
 precomp=""
+comp="g"
 postcomp="r"
 multifile=0
 silent=0
 
-while getopts "r d t c C p s f F: o u" arg
+while getopts "r d t c C p s f F: o u m g" arg
 do
     case "$arg" in
         c) precomp="c";;
@@ -588,6 +641,8 @@ do
         C) precomp="C";;
         f) precomp="f" multifile=1;;
         F) precomp="f" multifile=1 finish_arg=$OPTARG;;
+        m) comp="m";;
+        g) comp="g";;
         r) postcomp="r";;
         d) postcomp="d";;
         t) postcomp="t";;
@@ -616,7 +671,10 @@ esac
 
 [ "$precomp" != "" ] && exit;
 
-compile
+case "$comp" in
+    "g") compile;;
+    "m") compileMake;;
+esac
 
 case "$postcomp" in
     "r") run;;
