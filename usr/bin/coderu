@@ -1,13 +1,36 @@
 #!/bin/bash
 
-# Version: 0.6 (20.10.2010)
+# Version: 0.7 (24.10.2010)
 
 # Load settings from configuration file
 . /usr/etc/coderu/coderu.cfg
 
 # Functions
+function colorText {
+    local text="$1"
+    local color="$2"
+    
+    if [ $Colorblind -eq 1 ]
+    then
+        color="\E[1m";
+    else
+        case "$color" in
+            "black")   color="\E[30m";;
+            "red")     color="\E[31m";;
+            "green")   color="\E[32m";;
+            "yellow")  color="\E[33m";;
+            "blue")    color="\E[34m";;
+            "magenta") color="\E[35m";;
+            "cyan")    color="\E[36m";;
+            "white")   color="\E[37m";;
+        esac
+    fi
+
+    echo "$color$text\E[0m"
+}
+
 function removeSurroundingSpaces {
-    local result=$1
+    local result="$1"
     result=${result##" "}
     result=${result%%" "}
     echo "$result"
@@ -15,7 +38,7 @@ function removeSurroundingSpaces {
 
 function stripColorTags {
     local result="$1"
-    local regex='.*(\\E\[[0-9][0-9];?[0-9]?[0-9]?m).*'
+    local regex='.*(\\E\[[0-9][0-9]?;?[0-9]?[0-9]?m).*'
     
     while [[ "$result" =~ $regex ]]
     do
@@ -111,13 +134,40 @@ function repeat {
     done
 }
 
+function writeOutput {
+    echo -e "$Indent$1"
+}
+
 function writeStatus {
-    [ $silent -eq 0 ] && echo -e $1
+    [ $Silent -eq 0 ] && echo -e "$Indent$1"
+}
+
+function writeHeader {
+    if [ $Silent -eq 0 ]
+    then
+        echo -e "$Indent$1"
+        Indent="$Indent\t"
+    fi
+}
+
+function writeFooter {
+    if [ $Silent -eq 0 ] 
+    then
+        Indent=${Indent%"\t"}
+        echo -e "$Indent$1"
+    fi
 }
 
 function writeError {
-    echo -e "\aERROR: $1" 1>&2
-    exit 0
+    echo -e `colorText "${Indent}ERROR: $1" "$ERROR_COLOR"` 1>&2
+}
+
+function writeWarning {
+    echo -e `colorText "${Indent}WARNING: $1" "$WARNING_COLOR"`
+}
+
+function writeInput {
+    echo -en `colorText "${Indent}INPUT: $1" "$INPUT_COLOR"`
 }
 
 function getCharAt {
@@ -137,12 +187,15 @@ function colorCodeDiff {
     do
         local stringChar=`getCharAt "$string" "$i"`
         local patternChar=`getCharAt "$pattern" "$i"`
+        local highlightedChar=""
 
         if [ "$stringChar" == "$patternChar" ]
         then
-            result="$result\E[32m$stringChar"
+            highlightedChar=`colorText "$stringChar" "green"`
+            result="$result$highlightedChar"
         else
-            result="$result\E[31m$stringChar"
+            highlightedChar=`colorText "$stringChar" "red"`
+            result="$result$highlightedChar"
         fi
         
         i=$[i+1]
@@ -194,223 +247,411 @@ function getDependencies {
 }
 
 function getProjectName {
+    #writeHeader "GET PROJECT NAME: Getting project name"
+    
     if [ $# -eq 1 ]
     then
         ProjectName=$@
     elif [ $# -lt 1 ]
     then
-        echo -n "No project name specified. Please specify one: "
+        writeInput "No project name specified. Please specify one: "
         read ProjectName
     else
-        writeError "Too many arguments!"
+        writeWarning "Too many project names! Only the first one (\"$1\") will be used."
+        ProjectName=$1
     fi
-
-    ExecutableFile=$ProjectName.o
+    
+    #writeStatus "Using project name: $ProjectName"
+    
+    ExecutableFile=$ProjectName
+    ObjectFile=$ProjectName.o
     SourceFile=$ProjectName.c
+    HeaderFile=$ProjectName.h
     TestFile=$ProjectName.t
     DebugFile=$ProjectName.d
     ScreenshotFile=$ProjectName.png
     TextOutputFile=$ProjectName.txt
     MakeFile=$ProjectName.m
+    
+    #writeFooter "GET PROJECT NAME: Completed"
 }
 
 function getProjectNames {
+    #writeHeader "GET PROJECT NAMES: Getting project names"
+    
+    SourceFileNames=""
+    
     if [ $# -gt 0 ] 
     then
         ProjectNames=$@
-        SourceFileNames=""
         for projectName in $ProjectNames
         do
-            SourceFileNames="$SourceFileNames $projectName.c"
+            SourceFileNames="$SourceFileNames$projectName.c "
         done
         SourceFileNames=${SourceFileNames#" "}
-        writeStatus "The following source files will be used: $SourceFileNames"
+        writeStatus "The following projects will be used: $ProjectNames"
     else
         writeStatus "Automatically searching for valid source files..."
-        SourceFileNames=`ls *.c`
-        ProjectNames=${namesc//.c}
-        writeStatus "Search successfully completed, the following files where found: $SourceFileNames"
+        for sourceFile in *.c
+        do
+            [ -f ${sourceFile%.c}.t ] && SourceFileNames="$SourceFileNames$sourceFile "
+        done
+        ProjectNames=${SourceFileNames//.c}
+        
+        if [ "$ProjectNames" == "" ]
+        then
+            writeError "No valid source files found!"
+            exit
+        fi
+    
+        writeStatus "Search successfully completed, the following projects where found: $ProjectNames"
     fi
+    
+    #writeFooter "GET PROJECT NAMES: Completed"
 }
 
-function create {   
+function create {
+    writeHeader "CREATE: Creating necessarys files"
+    
+    local options=$@
+    local library=0
+    local open=0
+
+    set -- $options
+    while getopts "$AvailableOptions" option
+    do
+        case "$option" in
+            "l") library=1;;
+            "o") open=1;;
+        esac
+    done
+    OPTIND=1
+    
     if [ -f $SourceFile ]
     then
-        echo -n "WARNING: File already exists. Do you want to override it? [y/N] "
-        read option
+        writeInput "File already exists. Do you want to override it? [y/N] "
+        read input
         
-        if [ "$option" != "y" ]
+        if [ "$input" != "y" ]
         then
             exit
         fi
     fi
     
-    local date=`date +$DATE_FORMAT`
-    
-    local header_left="/* $SourceFile:"
-    local header_right="$CREATOR, $date */"
+    if [ $library -eq 0 ]
+    then
+        local date=`date +$DATE_FORMAT`
         
-    local hllen=$[`echo "$header_left" | wc -c`-1]
-    local hrlen=$[`echo "$header_right" | wc -c`-1]
-    local space=$[$HEADER_WIDTH-$hrlen-$hllen]
+        local header_left="/* $SourceFile:"
+        local header_right="$CREATOR, $date */"
+            
+        local hllen=$[`echo "$header_left" | wc -c`-1]
+        local hrlen=$[`echo "$header_right" | wc -c`-1]
+        local space=$[$HEADER_WIDTH-$hrlen-$hllen]
 
-    writeStatus "\nCreating project files for project \"$ProjectName\"...\n"
-    
-    writeStatus "Creating source file \"$SourceFile\"..."
-    touch $SourceFile
-    
-    # First header line (top border)
-    echo -n "/" > $SourceFile
-    repeat "*" $[$HEADER_WIDTH-2] >> $SourceFile
-    echo "/" >> $SourceFile 
-    
-    # Second header line (title)
-    echo -n "$header_left" >> $SourceFile
-    repeat " " $space >> $SourceFile
-    echo "$header_right" >> $SourceFile
-    
-    # Third header line (separator)
-    echo -n "/* " >> $SourceFile
-    repeat $HEADER_UNDERLINE_CHAR $[$HEADER_WIDTH-6] >> $SourceFile
-    echo " */" >> $SourceFile
-    
-    # Comment header lines    
-    for (( c=1; c<=$HEADER_COMMENT_LINES; c++ ))
-    do
-        echo -n "/*" >> $SourceFile
-        repeat " " $[$HEADER_WIDTH-4] >> $SourceFile
-        echo "*/" >> $SourceFile
-    done
-    
-    # Last header line (bottom border)
-    echo -n "/" >> $SourceFile
-    repeat "*" $[$HEADER_WIDTH-2] >> $SourceFile
-    echo -e "/\n" >> $SourceFile 
-    
-    # Includes
-    for include in $INCLUDES
-    do
-        if [ `getCharAt $include 0` == "<" ] 
+        writeHeader "PROJECT: Creating project files for project \"$ProjectName\"..."
+        
+        writeStatus "Creating source file \"$SourceFile\"..."
+        touch $SourceFile
+        
+        # First header line (top border)
+        echo -n "/" > $SourceFile
+        repeat "*" $[$HEADER_WIDTH-2] >> $SourceFile
+        echo "/" >> $SourceFile 
+        
+        # Second header line (title)
+        echo -n "$header_left" >> $SourceFile
+        repeat " " $space >> $SourceFile
+        echo "$header_right" >> $SourceFile
+        
+        # Third header line (separator)
+        echo -n "/* " >> $SourceFile
+        repeat $HEADER_UNDERLINE_CHAR $[$HEADER_WIDTH-6] >> $SourceFile
+        echo " */" >> $SourceFile
+        
+        # Comment header lines    
+        for (( c=1; c<=$HEADER_COMMENT_LINES; c++ ))
+        do
+            echo -n "/*" >> $SourceFile
+            repeat " " $[$HEADER_WIDTH-4] >> $SourceFile
+            echo "*/" >> $SourceFile
+        done
+        
+        # Last header line (bottom border)
+        echo -n "/" >> $SourceFile
+        repeat "*" $[$HEADER_WIDTH-2] >> $SourceFile
+        echo -e "/\n" >> $SourceFile 
+        
+        # Includes
+        for include in $INCLUDES
+        do
+            if [ `getCharAt $include 0` == "<" ] 
+            then
+                echo -e "#include $include" >> $SourceFile
+            else
+                echo -e "#include \"$include\"" >> $SourceFile
+            fi
+            
+        done
+        
+        if [ $INCLUDE_BOOL_DEF -eq 1 ]
         then
-            echo -e "#include $include" >> $SourceFile
-        else
-            echo -e "#include \"$include\"" >> $SourceFile
+            # Boolean def
+            echo -e "\ntypedef enum bool { false, true } bool;" >> $SourceFile
         fi
         
-    done
-    
-    if [ $INCLUDE_BOOL_DEF -eq 1 ]
-    then
-        # Boolean def
-        echo -e "\ntypedef enum bool { false, true } bool;" >> $SourceFile
+        # Empty main function
+        echo -e "\nint main(int argc, char *argv[])" >> $SourceFile
+        echo "{" >> $SourceFile
+        
+        echo -e "    return 0;" >> $SourceFile
+        echo "}" >> $SourceFile
+        writeStatus "Source file successfully created!\n"
+        
+        writeStatus "Creating test case file \"$TestFile\"..."
+        touch $TestFile
+        echo "# Tests for \"$SourceFile\"" > $TestFile
+        echo "<Test input> ; <Expected output>" >> $TestFile
+        writeStatus "Test case file successfully created!"
+
+        writeFooter "PROJECT: Project file creation successfully completed!"
+    else
+        writeHeader "LIBRARY: Creating files for library \"$ProjectName\"..."
+        
+        writeStatus "Creating header file \"$HeaderFile\"..."
+        touch $HeaderFile
+        writeStatus "Header file successfully created!\n"
+        
+        writeStatus "Creating source file \"$SourceFile\"..."
+        touch $SourceFile
+        echo -n "" > $SourceFile
+        for include in $INCLUDES
+        do
+            if [ `getCharAt $include 0` == "<" ] 
+            then
+                echo -e "#include $include" >> $SourceFile
+            else
+                echo -e "#include \"$include\"" >> $SourceFile
+            fi
+        done
+        echo -e "#include \"$HeaderFile\"\n" >> $SourceFile
+        
+        writeStatus "Source file successfully created!"
+        
+        writeFooter "LIBRARY: Library file creation successfully completed!"
     fi
     
-    # Empty main function
-    echo -e "\nint main(int argc, char *argv[])" >> $SourceFile
-    echo "{" >> $SourceFile
+    if [ $open -eq 1 ] 
+    then
+        open $options
+    fi
     
-    echo -e "    return 0;" >> $SourceFile
-    echo "}" >> $SourceFile
-    writeStatus "Source file successfully created!\n"
-    
-    writeStatus "Creating test case file \"$TestFile\"..."
-    touch $TestFile
-    echo "# Tests for \"$SourceFile\"" > $TestFile
-    echo "<Test input> ; <Expected output>" >> $TestFile
-    writeStatus "Test case file successfully created!\n"
-
-    writeStatus "File creation successfully completed!"
+    writeFooter "CREATE: Completed!"
 }
 
-function open {  
-    if [ -f $SourceFile ] 
+function open {
+    writeHeader "OPEN: Opening files"
+    
+    local options=$@
+    local newInstance=0
+    local library=0
+
+    set -- $options
+    while getopts "$AvailableOptions" option
+    do
+        case "$option" in
+            "i") newInstance=1;;
+            "o") open=1;;
+            "l") library=1;;
+        esac
+    done
+    OPTIND=1
+    
+    if [ $library -eq 0 ]
     then
-        writeStatus "Opening created files in geany..."
-        [ $OPEN_FILES_IN_NEW_INSTANCE -eq 1 ] && gargs="-i"
-        geany $gargs $TestFile $SourceFile &
-        writeStatus "Files successfully opened!" 
+        if [ -f $SourceFile -a -f $TestFile ]
+        then
+            writeStatus "Opening source and test files in geany..."
+            [ $newInstance -eq 1 ] && gargs="-i"
+            geany $gargs $TestFile $SourceFile &
+            writeStatus "Files successfully opened!" 
+        else
+            writeError "At least one file could not be found!"
+            exit 2
+        fi
     else
-        writeError "File \"$SourceFile\" couldn't be found!"
-    fi 
+        if [ -f $SourceFile -a -f $HeaderFile ]
+        then
+            writeStatus "Opening source and header files in geany..."
+            [ $newInstance -eq 1 ] && gargs="-i"
+            geany $gargs $HeaderFile $SourceFile &
+            writeStatus "Files successfully opened!" 
+        else
+            writeError "At least one file could not be found!"
+            exit 2
+        fi
+    fi
+
+    writeFooter "OPEN: Completed!"
 }
 
 function compile {
-    local includes=`getCustomIncludes $SourceFile`
-    includes=${includes//".h"/".c"}
-    includes=${includes//"$SourceFile"/}
+    writeHeader "COMPILE: Compiling program"
     
-    writeStatus "Compiling \"$SourceFile\" with command \"gcc $GCC_ARGS -o $ExecutableFile $SourceFile $includes\"..."
-    gcc $GCC_ARGS -o $ExecutableFile $SourceFile $includes
-    local compileResult=$?
-    if [ $compileResult -ne 0 ]
-    then
-        writeError "Compile failed!"
-        exit
-    fi
-    writeStatus "Compile successfully completed!"
-}
+    local options=$@
+    local gcc=0
+    local make=1
 
-function compileMake {
-    writeStatus "Generating makefile \"$MakeFile\"..."
-    
-    local includes=`getCustomIncludes $SourceFile`
-    local oFiles=${includes//".h"/".o"}
-    oFiles="$ExecutableFile $oFiles"
-    echo "$oFiles"
-    
-    touch $MakeFile
-    echo "CC      = gcc" > $MakeFile
-    echo "CCFLAGS = $GCC_ARGS" >> $MakeFile
-    echo "LD      = gcc" >> $MakeFile
-    echo "LDFLAGS = -lm" >> $MakeFile
-    echo >> $MakeFile
-    echo "all: $ProjectName" >> $MakeFile
-    echo >> $MakeFile
-    echo "OFILES = $oFiles" >> $MakeFile
-    echo >> $MakeFile
-    echo ".c.o:" >> $MakeFile
-    echo -e '\t$(CC) $(CCFLAGS) -c $<' >> $MakeFile
-    echo >> $MakeFile
-    echo "$ProjectName: " '$(OFILES)' >> $MakeFile
-    echo -e '\t$(LD) -o $@ $(OFILES) $(LDFLAGS)' >> $MakeFile
-    echo >> $MakeFile
-    echo "clean:" >> $MakeFile
-    echo -e '\trm -f $(OFILES)' >> $MakeFile
-    echo >> $MakeFile
-    echo "# dependencies" >> $MakeFile
-    getDependencies $SourceFile >> $MakeFile
-    
-    local cFiles=${includes//".h"/".c"}
-    for cFile in $cFiles
+    set -- $options
+    while getopts "$AvailableOptions" option
     do
-        getDependencies $cFile >> $MakeFile
+        case "$option" in
+            "g") gcc=1; make=0; options=${options/"-$option "/};;
+        esac
     done
+    OPTIND=1
+    
+    if [ $gcc -eq 1 ] # Compile with gcc
+    then
+        writeHeader "GCC: Compiling with gcc"
+        
+        local includes=`getCustomIncludes $SourceFile`
+        includes=${includes//".h"/".c"}
+        includes=${includes//"$SourceFile"/}
+        
+        writeHeader "Compiling \"$SourceFile\" with gcc..."
+        gcc $GCC_ARGS -o $ExecutableFile $SourceFile $includes &> gcc_output
+        local compileResult=$?
+        
+        while read line
+        do
+            echo -e "$Indent$line"
+        done < gcc_output
+        rm gcc_output
+        
+        if [ $compileResult -ne 0 ]
+        then
+            writeError "Compile failed!"
+            exit 1
+        fi
+        writeFooter "Compile successfully completed!"
+        
+        writeFooter "GCC: Completed!"
+    else # Compile with make
+        writeHeader "MAKE: Compiling with make!"
+    
+        writeStatus "Generating makefile \"$MakeFile\"..."
+    
+        local includes=`getCustomIncludes $SourceFile`
+        local oFiles=${includes//".h"/".o"}
+        oFiles="$ObjectFile $oFiles"
+        
+        touch $MakeFile
+        echo "CC      = gcc" > $MakeFile
+        echo "CCFLAGS = $GCC_ARGS" >> $MakeFile
+        echo "LD      = gcc" >> $MakeFile
+        echo "LDFLAGS = -lm" >> $MakeFile
+        echo >> $MakeFile
+        echo "all: $ProjectName" >> $MakeFile
+        echo >> $MakeFile
+        echo "OFILES = $oFiles" >> $MakeFile
+        echo >> $MakeFile
+        echo ".c.o:" >> $MakeFile
+        echo -e '\t$(CC) $(CCFLAGS) -c $<' >> $MakeFile
+        echo >> $MakeFile
+        echo "$ProjectName: " '$(OFILES)' >> $MakeFile
+        echo -e '\t$(LD) -o $@ $(OFILES) $(LDFLAGS)' >> $MakeFile
+        echo >> $MakeFile
+        echo "clean:" >> $MakeFile
+        echo -e '\trm -f $(OFILES)' >> $MakeFile
+        echo >> $MakeFile
+        echo "# dependencies" >> $MakeFile
+        getDependencies $SourceFile >> $MakeFile
+        
+        local cFiles=${includes//".h"/".c"}
+        for cFile in $cFiles
+        do
+            getDependencies $cFile >> $MakeFile
+        done
 
-    writeStatus "Makefile successfully generated!"
-    writeStatus "Executing makefile..."
-    make -f $MakeFile
-    writeStatus "Makefile successfully executed!"
+        writeStatus "Makefile successfully generated!"
+        writeHeader "Executing makefile..."
+        [ $Silent -eq 1 ] && local silentSwitch="-s"
+        
+        
+        make $silentSwitch -f $MakeFile &> make_output
+        local makeResult=$?
+        
+        while read line
+        do
+            echo -e "$Indent$line"
+        done < make_output
+        rm make_output
+
+        if [ $makeResult -ne 0 ]
+        then
+            writeError "Make failed!"
+            rm $MakeFile
+            exit 1
+        fi
+        writeFooter "Makefile successfully executed!"
+        
+        writeFooter "MAKE: Completed!"
+    fi
+    
+    writeFooter "COMPILE: Completed!"
 }
 
 function run {
-    echo -n "Please enter the arguments you want to give to your program: "
-    read arguments
-    writeStatus "Running \"$ExecutableFile\" with \"$arguments\"..."
-    ./$ExecutableFile $arguments
-    writeStatus "End of program!"
+    writeHeader "RUN: Running program"
+    
+    local options=$@
+    local arguments=""
+    
+    set -- $options
+    while getopts "$AvailableOptions" option
+    do
+        case "$option" in
+            "r") arguments=${options//"-r "/};;
+        esac
+    done
+    OPTIND=1
+    if [ "$arguments" == "" ]
+    then
+        writeInput "Please enter the arguments you want to give to your program: "
+        read arguments
+    fi
+    
+    writeHeader "Running \"$ExecutableFile\" with \"$arguments\"..."
+    ./$ExecutableFile $arguments &> program_output
+    
+    local lineCount=$(wc -l program_output | awk '{print $1}')
+    echo >> program_output
+    local lineNr=0
+    while read line
+    do
+        [ $lineNr -lt $lineCount -o ${#line} -gt 0 ] && echo -e "$Indent$line"
+        lineNr=$[$lineNr+1]
+    done < program_output
+    rm program_output
+    
+    writeFooter "End of program!"
+    
+    writeFooter "RUN: Completed!"
 }
 
-function debug {
-    writeStatus "Starting debugging session..."
-    gcc -g -o $DebugFile $SourceFile
-    gdb $DebugFile
-    writeStatus "End of debugging session!"
-}
+#function debug {
+#    writeStatus "Starting debugging session..."
+#    gcc -g -o $DebugFile $SourceFile
+#    gdb $DebugFile
+#    writeStatus "End of debugging session!"
+#}
 
 function test {
-    cnt=1
-
-    echo "Running test cases for \"$SourceFile\""
+    writeHeader "TEST: Running test cases defined in \"$TestFile\""
+    
+    local options=$@
+    local nr=1
 
     while read line 
     do
@@ -431,18 +672,36 @@ function test {
             input=$line
         fi
         
-        output=`./$ExecutableFile $input`
+        [ $nr -gt 1 ] && echo
+        writeOutput "Testcase $nr: ./$ExecutableFile $input"
+        Indent="$Indent\t"
+        ./$ExecutableFile $input &> program_output
         
-        echo -e "Testcase $cnt: ./$ExecutableFile $input"
-        echo "Output $cnt  : $output"
+        local lineCount=$(wc -l program_output | awk '{print $1}')
+        echo >> program_output
+        local lineNr=0
+        while read line
+        do
+            [ $lineNr -lt $lineCount -o ${#line} -gt 0 ] && echo -e "$Indent$line"
+            lineNr=$[$lineNr+1]
+        done < program_output
+        rm program_output
+        
+        Indent=${Indent%"\t"}
+        # writeFooter Testcase $nr: Completed!"
 
-        cnt=$[$cnt + 1]
-        echo
+        nr=$[$nr + 1]
+        
+        sleep 0.1
     done < $TestFile
+    
+    writeFooter "TEST: Completed!"
 }
 
 function unittest {
-    echo "Running unit tests for \"$SourceFile\""
+    writeHeader "UNIT: Running test cases with expected output"
+    
+    local options=$@
     
     local arrayIndex=0
     
@@ -480,10 +739,10 @@ function unittest {
         
         if [ "$output" == "$expected" ]
         then
-            result="\E[32mO\E[30m"
+            result=`colorText "O" "green"`
             cntSuccess=$[$cntSuccess+1]
         else
-            result="\E[31mX\E[30m"
+            result=`colorText "X" "red"`
             cntError=$[$cntError+1]
         fi
         
@@ -545,141 +804,281 @@ function unittest {
     printTableFooter $tableWidth
     
     writeStatus "Tests completed ($cntSuccess successful, $cntError failed)!"
+    
+    writeFooter "UNIT: Completed!"
 }
 
 function print {
-    if [ $PRINT_TO_TXT -eq 1 ]
-    then
-        writeStatus "Running tests and saving output to \"$TextOutputFile\"..."
-        coderu -ts $ProjectName > $TextOutputFile
-        writeStatus "Test outputs successfully written!"
-    else
-        writeStatus "Taking testrun screenshot..."
-        [ -d $SCREENSHOT_DIR ] || mkdir $SCREENSHOT_DIR
-        gnome-terminal --hide-menubar -t ss$ProjectName -x bash -c "coderu -ts $ProjectName; import -window ss$ProjectName $SCREENSHOT_DIR/$ScreenshotFile" 
-        writeStatus "Testrun screenshot \"$ScreenshotFile\" successfully created!"
-    fi
+    writeHeader "PRINT: Writing test outputs to file \"$TextOutputFile\""
+    
+    local options=$@
+    
+    coderu test -s $ProjectName > $TextOutputFile
+    
+    writeFooter "PRINT: Completed!"
 }
 
-function finish {
-    local finish_photo=1
-    local finish_zip=1
-    local finish_format=1
+function photo {
+    writeHeader "PHOTO: Take screenshots of the test runs and save in \"$ScreenshotFile\""
     
-    if [ "$finish_arg" != "" ]
-    then
-        [ "${finish_arg:0:1}" == "0" ] && finish_photo=0
-        [ "${finish_arg:1:1}" == "0" ] && finish_zip=0
-        [ "${finish_arg:2:1}" == "0" ] && finish_format=0
-    fi    
+    local options=$@
+    
+    [ -d $SCREENSHOT_DIR ] || mkdir $SCREENSHOT_DIR
+    gnome-terminal --hide-menubar -t ss$ProjectName -x bash -c "coderu test -s $ProjectName; import -window ss$ProjectName $SCREENSHOT_DIR/$ScreenshotFile" 
+    
+    writeFooter "PHOTO: Completed!"
+}
 
-    if [ $finish_photo -eq 1 ]
-    then
-        writeStatus "Taking screenshots of all found programs..."
-        for projectName in $ProjectNames 
-        do
-            if [ -f $projectName.t ]
-            then
-                coderu -p $ProjectNames
-                sleep $SCREENSHOT_WAITTIME
-            fi
-        done
-        writeStatus "Screenshots successfully taken!"
-    fi
+function zipSources {
+    writeHeader "ZIP: Adding files to a zip archive"
     
-    if [ $finish_zip -eq 1 ]
+    local options=$@
+    local exnr=0
+    
+    set -- $options
+    while getopts "$AvailableOptions" option
+    do
+        case "$option" in
+            "n") exnr=$OPTARG;;
+        esac
+    done
+    OPTIND=1
+    
+    if [ $exnr -eq 0 ]
     then
-        writeStatus "Creating zip file of selected source files..."
+        writeStatus "Trying to get exercise number from path name..."
         local exnr=`expr match $PWD '.*\([0-9][0-9]\)'`
         
         if [ "$exnr" == "" ] 
         then
-            echo -n "No valid exercise number found. Please enter manually: "
+            writeInput "No valid exercise number found. Please enter manually: "
             read exnr
         fi
-        
-        [ -d $ZIP_DIR ] || mkdir $ZIP_DIR
-        
-        local zipname="$LAST_NAME.$FIRST_NAME.$exnr.zip"
-        local includes=`getCustomIncludes $SourceFileNames`
-        
-        [ -f $zipname ] && rm $zipname
-        zip $ZIP_DIR/$zipname $SourceFileNames $includes
-        
-        writeStatus "Zip file \"$zipname\" successfully created!"
     fi
     
-    if [ $finish_format -eq 1 ]
-    then
-        writeStatus "Formatting source files..."
-        [ -d $HIGHLIGHT_DIR ] || mkdir $HIGHLIGHT_DIR
-        
-        for projectName in $ProjectNames 
-        do
-            if [ -f $projectName.t ]
-            then
-                highlight -i $projectName.c -O $HIGHLIGHT_DIR $HIGHLIGHT_FORMAT -s $HIGHLIGHT_STYLE
-            fi
-        done
-                
-        writeStatus "Source files successfully formatted!"
-    fi
+    writeHeader "Creating zip file of selected source files..."
+    [ -d $ZIP_DIR ] || mkdir $ZIP_DIR
+    
+    local zipname="$LAST_NAME.$FIRST_NAME.$exnr.zip"
+    local includedHeaders=`getCustomIncludes $SourceFileNames`
+    local headerSources=""
+    
+    for headerFile in $includedHeaders
+    do
+        local sourceFile=${headerFile%".h"}.c
+        [ -f $sourceFile ] && headerSources="$headerSources$sourceFile "
+    done
+    
+    [ -f $zipname ] && rm $zipname
+    zip $ZIP_DIR/$zipname $SourceFileNames $includedHeaders $headerSources &> zip_output
+    
+    while read line
+    do
+        writeOutput "$line"
+    done < zip_output
+    rm zip_output
+    
+    writeFooter "Zip file \"$zipname\" successfully created!"
+    
+    writeFooter "ZIP: Completed!"
 }
 
-# Argument parsing
-precomp=""
-comp="g"
-postcomp="r"
-multifile=0
-silent=0
+function finish {
+    writeHeader "FINISH: Finishing project"
+    
+    options=$@
+    
+    writeHeader "Compiling projects..."
+    for projectName in $ProjectNames
+    do
+        getProjectName $projectName
+        compile $options
+    done
+    writeFooter "Compilation successfully completed!"
 
-while getopts "r d t c C p s f F: o u m g" arg
-do
-    case "$arg" in
-        c) precomp="c";;
-        o) precomp="o";;
-        C) precomp="C";;
-        f) precomp="f" multifile=1;;
-        F) precomp="f" multifile=1 finish_arg=$OPTARG;;
-        m) comp="m";;
-        g) comp="g";;
-        r) postcomp="r";;
-        d) postcomp="d";;
-        t) postcomp="t";;
-        p) postcomp="p";;
-        u) postcomp="u";;
+    writeHeader "Taking screenshots of all found programs..."
+    for projectName in $ProjectNames 
+    do
+        getProjectName $projectName
+        photo $options
+        sleep $SCREENSHOT_WAITTIME
+    done
+    writeFooter "Screenshots successfully taken!"
 
-        s) silent=1;;
+    writeHeader "Running test cases and writing output to file..."
+    for projectName in $ProjectNames
+    do
+        getProjectName $projectName
+        print $options
+    done
+    writeFooter "Test case output writing successful!"
+    
+    writeHeader "Adding sources to zip archive..."
+    zipSources $options
+    writeFooter "Zip archive successfully created!"
+    
+    writeHeader "Formatting source files..."
+    [ -d $HIGHLIGHT_DIR ] || mkdir $HIGHLIGHT_DIR
+    
+    for projectName in $ProjectNames 
+    do
+        getProjectName $projectName
+        highlightSources $options
+    done
+    writeFooter "Source files successfully formatted!"
+    
+    writeFooter "FINISH: Completed!"
+}
+
+function highlightSources {
+    writeHeader "HIGHLIGHT: Highlighting files for project \"$ProjectName\""
+     
+    options=$@
+    
+    highlight $HIGHLIGHT_ARGS -i $SourceFile -O $HIGHLIGHT_DIR $HIGHLIGHT_FORMAT -s $HIGHLIGHT_STYLE
+    
+    for headerFile in `getCustomIncludes "$SourceFile"`
+    do
+        highlight $HIGHLIGHT_ARGS -i $headerFile -O $HIGHLIGHT_DIR $HIGHLIGHT_FORMAT -s $HIGHLIGHT_STYLE
+        
+        sourceFile=${headerFile%".h"}.c
+        [ -f $sourceFile ] && highlight $HIGHLIGHT_ARGS -i $sourceFile -O $HIGHLIGHT_DIR $HIGHLIGHT_FORMAT -s $HIGHLIGHT_STYLE
+    done
+    
+    writeFooter "HIGHLIGHT: Completed!"
+}
+
+function main {
+    # Actions
+    #  * create [-l] [-o [-i]]
+    #  * compile [-g]
+    #  * run [-r [<arguments>]]
+    #  * finish [-n <exercisenr>]
+    #  * zip [-n <exercisenr>]
+    #  * highlight
+    #  * print
+    #  * photo
+    #  * unit
+    #  * test
+    #  * open [-i]
+
+    AvailableOptions="scloatpzhir:n:"
+
+    # Options
+    #  * -s : silent [global]
+    #  * -c : colorblind mode [global]
+    #  * -l : library (<projectname>.c, <projectname>.h)
+    #  * -o : open
+    #  * -i : open in new instance
+    #  * -a : all
+    #  * -r : arguments
+    #  * -t : text output
+    #  * -p : photo output
+    #  * -z : zip
+    #  * -h : highlight
+    #  * -n : exercise number (used to name zip file)
+
+    # Settings
+    #  * FIRST_NAME
+    #  * LAST_NAME
+    #  * CREATOR
+    #  * DATE_FORMAT
+    #  * HEADER_WIDTH
+    #  * HEADER_COMMENT_LINES
+    #  * HEADER_UNDERLINE_CHAR
+    #  * SCREENSHOT_DIR
+    #  * SCREENSHOT_WAITTIME
+    #  * HIGHLIGHT_FORMAT
+    #  * HIGHLIGHT_STYLE
+    #  * HIGHLIGHT_DIR
+    #  * GCC_ARGS
+    #  * INCLUDE_BOOL_DEF
+    #  * INCLUDES
+    #  * ZIP_DIR
+
+    Silent=0
+    Colorblind=0
+    Indent=""
+    local action=""
+    local options=""
+
+    local args=`getopt "$AvailableOptions" "$@"`
+    local regex='[ ]?(.*)-- ([a-zA-Z]+)[ ]?(.*)?'
+
+    if [[ "$args" =~ $regex ]]
+    then
+        options="${BASH_REMATCH[1]}"
+        action="${BASH_REMATCH[2]}"
+        names="${BASH_REMATCH[3]}"
+    fi
+    
+    #echo ".$action.$options.$names."
+    
+    set -- $options
+    while getopts "$AvailableOptions" option
+    do
+        case "$option" in
+            "s") Silent=1;;
+            "c") Colorblind=1;;
+        esac
+    done
+    OPTIND=1
+
+    local multifile=0
+    case "$action" in
+        "finish") multifile=1;;
+        "zip")    multifile=1;;
     esac
-done
-shift $[$OPTIND-1]
 
-# Main program
-if [ $multifile -eq 1 ]
-then
-    getProjectNames $@
-else
-    getProjectName $@
-fi
+    local skipCompile=0
+    case "$action" in
+        "create") skipCompile=1;;
+        "open")   skipCompile=1;;
+        "finish") skipCompile=1;;
+        "zip")    skipCompile=1;;
+    esac
+    
+    if [ "$names" == "" ]
+    then
+        case "$action" in
+            "create") ;;
+            "open") ;;
+            "run") ;;
+            "test") ;;
+            "unittest") ;;
+            "print") ;;
+            "photo") ;;
+            "finish") ;;
+            "zip") ;;
+            "highlight") ;;
+            *) names="$action" action="run";;
+        esac
+    fi
 
-case "$precomp" in
-    "c") create;;
-    "o") open;;
-    "C") create; open;;
-    "f") finish;;
-esac
+    if [ $multifile -eq 1 ]
+    then
+        getProjectNames $names
+    else
+        getProjectName $names
+    fi
 
-[ "$precomp" != "" ] && exit;
+    if [ $skipCompile -eq 0 ]
+    then
+        compile $options
+    fi
 
-case "$comp" in
-    "g") compile;;
-    "m") compileMake;;
-esac
+    case "$action" in
+        "create")    create $options;;
+        "open")      open $options;;
+        "run")       run $options;;
+        "test")      test $options;;
+        "unit")      unittest $options;;
+        "print")     print $options;;
+        "photo")     photo $options;;
+        "finish")    finish $options;;
+        "zip")       zipSources $options;;
+        "highlight") highlightSources $options;;
+    esac
+}
 
-case "$postcomp" in
-    "r") run;;
-    "d") debug;;
-    "t") test;;
-    "p") print;;
-    "u") unittest;;
-esac
+main "$@"

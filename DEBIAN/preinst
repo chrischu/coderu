@@ -1,61 +1,59 @@
 #!/bin/bash
 
-function split
-{
-    index=$[`expr index "$1" "$2"`-1]
-    [ $index -gt 0 ] && echo -n ${1:0:$index}
-}
-
 OLD_CFG_PATH="/usr/etc/coderu/coderu.cfg"
+NEW_CFG_PATH=tmp$OLD_CFG_PATH
+
+#OLD_CFG_PATH="old.cfg"
+#NEW_CFG_PATH="new.cfg"
 
 [ -f $OLD_CFG_PATH ] || exit 0
 
-NEW_CFG_PATH=tmp$OLD_CFG_PATH
+echo "Merging old and new configuration files..."
+
 dpkg-deb --extract coderu.deb tmp
 
-NEW_SETTINGS=""
-while read setting comment
-do
-    add=`split $setting "="`
-    [ "$add" != "" ] && NEW_SETTINGS="$NEW_SETTINGS$add "
-done < $NEW_CFG_PATH
+arrayIndex=0
 
-CHANGED_SETTINGS=""
-while read setting comment
+regex='([^=]*)=([^#]*)( .*)?'
+
+while read line
 do
-    name=`split $setting "="`
-    index=`expr index "$NEW_SETTINGS" "$name"`
-    ol=${#NEW_SETTINGS}
-    NEW_SETTINGS=${NEW_SETTINGS/"$name "/}
-    nl=${#NEW_SETTINGS}
-    
-    if [ $ol -gt $nl ]
+    if [[ "$line" =~ $regex ]]
     then
-        CHANGED_SETTINGS="$CHANGED_SETTINGS$setting $comment\n"
+        OLD_SETTINGS[$arrayIndex]=${BASH_REMATCH[1]}
+        OLD_VALUES[$arrayIndex]=${BASH_REMATCH[2]}
+        #echo "${BASH_REMATCH[1]}=${BASH_REMATCH[2]}"
+        arrayIndex=$[$arrayIndex+1]
     fi
 done < $OLD_CFG_PATH
 
-while read setting comment
+rm $OLD_CFG_PATH
+touch $OLD_CFG_PATH
+
+oldSettingsCount=${#OLD_SETTINGS[*]}
+while read line
 do
-    name=`split $setting "="`
-    index=`expr index "$NEW_SETTINGS" "$name"`
-    ol=${#NEW_SETTINGS}
-    NEW_SETTINGS=${NEW_SETTINGS/"$name "/}
-    nl=${#NEW_SETTINGS}
-    
-    if [ $ol -gt $nl ]
+    if [[ "$line" =~ $regex ]]
     then
-        CHANGED_SETTINGS="$CHANGED_SETTINGS$setting $comment\n"
+        setting=${BASH_REMATCH[1]}
+        value=${BASH_REMATCH[2]}
+        
+        oldSettingsIndex=0
+        while [[ $oldSettingsIndex -lt $oldSettingsCount ]]
+        do
+            #echo "   $setting == ${OLD_SETTINGS[$oldSettingsIndex]}"
+            if [ "$setting" == "${OLD_SETTINGS[$oldSettingsIndex]}" ]
+            then
+                #echo "$line/\"$value\"/${OLD_VALUES[$oldSettingsIndex]}"
+                line=${line/"$value"/${OLD_VALUES[$oldSettingsIndex]}}
+                break
+            fi
+            let oldSettingsIndex++
+        done
     fi
-    
-    if [ "$setting" == "export" ]
-    then
-        CHANGED_SETTINGS="$CHANGED_SETTINGS\n$setting $comment"
-    fi
+    echo "$line" >> $OLD_CFG_PATH
 done < $NEW_CFG_PATH
 
-echo -e $CHANGED_SETTINGS > $OLD_CFG_PATH
-
-#cat $NEW_CONF_PATH
-
 rm -R tmp
+
+echo "Merging successful!"
