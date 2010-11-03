@@ -498,20 +498,7 @@ function open {
 function compile {
     writeHeader "COMPILE: Compiling program"
     
-    local options=$@
-    local gcc=0
-    local make=1
-
-    set -- $options
-    while getopts "$AvailableOptions" option
-    do
-        case "$option" in
-            "g") gcc=1; make=0; options=${options/"-$option "/};;
-        esac
-    done
-    OPTIND=1
-    
-    if [ $gcc -eq 1 ] # Compile with gcc
+    if [ $GCC -eq 1 ] # Compile with gcc
     then
         writeHeader "GCC: Compiling with gcc"
         
@@ -520,7 +507,7 @@ function compile {
         includes=${includes//"$SourceFile"/}
         
         writeHeader "Compiling \"$SourceFile\" with gcc..."
-        gcc $GCC_ARGS -o $ExecutableFile $SourceFile $includes &> gcc_output
+        gcc -lm $GCC_ARGS -o $ExecutableFile $SourceFile $includes &> gcc_output
         local compileResult=$?
         
         while read line
@@ -639,13 +626,6 @@ function run {
     
     writeFooter "RUN: Completed!"
 }
-
-#function debug {
-#    writeStatus "Starting debugging session..."
-#    gcc -g -o $DebugFile $SourceFile
-#    gdb $DebugFile
-#    writeStatus "End of debugging session!"
-#}
 
 function test {
     writeHeader "TEST: Running test cases defined in \"$TestFile\""
@@ -901,7 +881,8 @@ function finish {
     do
         getProjectName $projectName
         photo $options
-        sleep $SCREENSHOT_WAITTIME
+        #pid=$!
+        #wait $pid
     done
     writeFooter "Screenshots successfully taken!"
 
@@ -935,14 +916,23 @@ function highlightSources {
      
     options=$@
     
+    writeHeader "Highlighting \"$SourceFile\"..."
     highlight $HIGHLIGHT_ARGS -i $SourceFile -O $HIGHLIGHT_DIR $HIGHLIGHT_FORMAT -s $HIGHLIGHT_STYLE
+    writeFooter "Highlighting \"$SourceFile\" completed!"
     
     for headerFile in `getCustomIncludes "$SourceFile"`
     do
+        writeHeader "Highlighting \"$headerFile\"..."
         highlight $HIGHLIGHT_ARGS -i $headerFile -O $HIGHLIGHT_DIR $HIGHLIGHT_FORMAT -s $HIGHLIGHT_STYLE
+        writeFooter "Highlighting \"$headerFile\" completed!"
         
         sourceFile=${headerFile%".h"}.c
-        [ -f $sourceFile ] && highlight $HIGHLIGHT_ARGS -i $sourceFile -O $HIGHLIGHT_DIR $HIGHLIGHT_FORMAT -s $HIGHLIGHT_STYLE
+        if [ -f $sourceFile ]
+        then
+            writeHeader "Highlighting \"$sourceFile\"..."
+            highlight $HIGHLIGHT_ARGS -i $sourceFile -O $HIGHLIGHT_DIR $HIGHLIGHT_FORMAT -s $HIGHLIGHT_STYLE
+            writeFooter "Highlighting \"$sourceFile\" completed!"
+        fi
     done
     
     writeFooter "HIGHLIGHT: Completed!"
@@ -951,26 +941,24 @@ function highlightSources {
 function main {
     # Actions
     #  * create [-l] [-o [-i]]
-    #  * compile [-g]
+    #  * compile
     #  * run [-r [<arguments>]]
     #  * finish [-n <exercisenr>]
     #  * zip [-n <exercisenr>]
     #  * highlight
     #  * print
     #  * photo
-    #  * unit
+    #  * unit (disabled temporarily)
     #  * test
     #  * open [-i]
-
-    AvailableOptions="scloatpzhir:n:"
 
     # Options
     #  * -s : silent [global]
     #  * -c : colorblind mode [global]
+    #  * -g : use gcc instead of make [global]
     #  * -l : library (<projectname>.c, <projectname>.h)
     #  * -o : open
     #  * -i : open in new instance
-    #  * -a : all
     #  * -r : arguments
     #  * -t : text output
     #  * -p : photo output
@@ -995,9 +983,12 @@ function main {
     #  * INCLUDE_BOOL_DEF
     #  * INCLUDES
     #  * ZIP_DIR
+    
+    AvailableOptions="scgloir:tpzhn:"
 
     Silent=0
     Colorblind=0
+    GCC=0
     Indent=""
     local action=""
     local options=""
@@ -1020,6 +1011,7 @@ function main {
         case "$option" in
             "s") Silent=1;;
             "c") Colorblind=1;;
+            "g") GCC=1;;
         esac
     done
     OPTIND=1
@@ -1045,13 +1037,13 @@ function main {
             "open") ;;
             "run") ;;
             "test") ;;
-            "unittest") ;;
+            #"unit") ;;
             "print") ;;
             "photo") ;;
             "finish") ;;
             "zip") ;;
             "highlight") ;;
-            *) names="$action" action="run";;
+            *) names="$action"; action="run";;
         esac
     fi
 
@@ -1072,7 +1064,7 @@ function main {
         "open")      open $options;;
         "run")       run $options;;
         "test")      test $options;;
-        "unit")      unittest $options;;
+        #"unit")      unittest $options;;
         "print")     print $options;;
         "photo")     photo $options;;
         "finish")    finish $options;;
