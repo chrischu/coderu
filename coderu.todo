@@ -1,1 +1,2 @@
 * Mehrzeilige erwartete Ausgabe ermöglichen (--> "unit" reaktivieren)
+* Zeitausführung bei "test" und "run" beschränken (--> keine Endlosausführung mit GB-Textdateien mehr)

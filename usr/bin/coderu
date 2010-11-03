@@ -420,22 +420,50 @@ function create {
         
         writeStatus "Creating header file \"$HeaderFile\"..."
         touch $HeaderFile
+        echo -n "" > $HeaderFile
+        
+        echo "#ifndef Module_h" >> $HeaderFile
+        echo "#define Module_h" >> $HeaderFile
+        echo "" >> $HeaderFile
+        echo "/* 1. standard headers */" >> $HeaderFile
+        echo "" >> $HeaderFile
+        echo "/* 2. user-def. headers */" >> $HeaderFile
+        echo "" >> $HeaderFile
+        echo "/* 3. global macros */" >> $HeaderFile
+        echo "" >> $HeaderFile
+        echo "/* 4. global type declarations */" >> $HeaderFile
+        echo "" >> $HeaderFile
+        echo "/* 5. global variable declarions */" >> $HeaderFile
+        echo "" >> $HeaderFile
+        echo "/* 6. global function declarations */" >> $HeaderFile
+        echo "" >> $HeaderFile
+        echo "#endif" >> $HeaderFile
+        
         writeStatus "Header file successfully created!\n"
         
         writeStatus "Creating source file \"$SourceFile\"..."
         touch $SourceFile
         echo -n "" > $SourceFile
-        for include in $INCLUDES
-        do
-            if [ `getCharAt $include 0` == "<" ] 
-            then
-                echo -e "#include $include" >> $SourceFile
-            else
-                echo -e "#include \"$include\"" >> $SourceFile
-            fi
-        done
-        echo -e "#include \"$HeaderFile\"\n" >> $SourceFile
         
+        echo "/* 1. standard headers */" >> $SourceFile
+        echo "" >> $SourceFile
+        echo "/* 2. user-def. headers */" >> $SourceFile
+        echo "" >> $SourceFile
+        echo "/* 3. own header */" >> $SourceFile
+        echo "#include \"$HeaderFile\"" >> $SourceFile
+        echo "/* 4. local macros */" >> $SourceFile
+        echo "#include \"$HeaderFile\"" >> $SourceFile
+        echo "/* 5. local type declarations */" >> $SourceFile
+        echo "#include \"$HeaderFile\"" >> $SourceFile
+        echo "/* 6. global variable definitions */" >> $SourceFile
+        echo "#include \"$HeaderFile\"" >> $SourceFile
+        echo "/* 7. local variable definitions */" >> $SourceFile
+        echo "#include \"$HeaderFile\"" >> $SourceFile
+        echo "/* 8. local function definitions */" >> $SourceFile
+        echo "#include \"$HeaderFile\"" >> $SourceFile
+        echo "/* 9. global function definitions */" >> $SourceFile
+        echo "#include \"$HeaderFile\"" >> $SourceFile
+
         writeStatus "Source file successfully created!"
         
         writeFooter "LIBRARY: Library file creation successfully completed!"
